@@ -1,0 +1,26 @@
+diff --git a/meson.build b/meson.build
+index 758509b..f305465 100644
+--- a/meson.build
++++ b/meson.build
+@@ -128,6 +128,21 @@ bwrap = executable(
+   dependencies : [selinux_dep, libcap_dep],
+ )
+ 
++library(
++  'bwrap',
++  [
++    'bubblewrap.c',
++    'bind-mount.c',
++    'network.c',
++    'utils.c',
++  ],
++  build_rpath : get_option('build_rpath'),
++  install : true,
++  install_dir : bwrapdir,
++  install_rpath : get_option('install_rpath'),
++  dependencies : [selinux_dep, libcap_dep],
++)
++
+ manpages_xsl = 'http://docbook.sourceforge.net/release/xsl/current/manpages/docbook.xsl'
+ xsltproc = find_program('xsltproc', required : get_option('man'))
+ build_man_page = false
