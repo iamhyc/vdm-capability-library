@@ -3,8 +3,10 @@ import os, sys, time, argparse, subprocess as sp
 from pathlib import Path
 import json, yaml, tempfile
 import halo, termcolor
+from getpass import getpass, getuser
 
 DBG = 1
+COMPAT = ['v1']
 POSIX = lambda x: x.as_posix()
 SHELL_RUN = lambda x: sp.run(x, capture_output=True, check=True, shell=True)
 
@@ -14,6 +16,8 @@ INSTALL_DIRECTORY = os.getenv('VDM_CAPABILITY_INSTALL_DIRECTORY',
                         POSIX( Path('~/.vdm/capability').expanduser() ))
 if os.getenv('SBS_EXECUTABLE') is None:
     os.environ['SBS_EXECUTABLE'] = POSIX( Path(__file__).resolve() )
+    os.environ['VDM_CAPABILITY_OUTPUT_DIRECTORY'] = OUTPUT_DIRECTORY
+    os.environ['VDM_CAPABILITY_INSTALL_DIRECTORY'] = INSTALL_DIRECTORY
 
 class TypeWriter:
     def __init__(self):
@@ -74,9 +78,19 @@ class WorkSpace:
 
 class NoneLogger:
     __slots__ = ['text', 'enabled']
+    @staticmethod
+    def start():pass
+    @staticmethod
+    def stop():pass
+    @staticmethod
+    def info():pass
+    @staticmethod
+    def warn():pass
+    pass
 
 class SimpleBuildSystem:
-    def __init__(self):
+    def __init__(self, prefix=''):
+        self.prefix = prefix
         self.output_dir = Path(OUTPUT_DIRECTORY)
         self.install_dir = Path(INSTALL_DIRECTORY)
 
@@ -86,17 +100,23 @@ class SimpleBuildSystem:
         os.environ['LIBRARY_PATH'] = f"{os.getenv('LIBRARY_PATH','')}:{self.install_dir}"
         pass
 
-    def __install_npm(self):
+    @staticmethod
+    def __install_npm():
         try:
             SHELL_RUN('which npm')
         except:
             try:
-                SHELL_RUN('curl -L https://npmjs.org/install.sh | sh')
+                SHELL_RUN('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash')
+                SHELL_RUN('. $HOME/.nvm/nvm.sh && nvm install --lts')
             except:
                 raise Exception('npm installation failed.')
+            else:
+                _source = termcolor.colored('. $HOME/.nvm/nvm.sh', 'green')
+                raise Exception(f'Complete npm installation by: {_source}')
         pass
 
-    def __install_cargo(self):
+    @staticmethod
+    def __install_cargo():
         try:
             SHELL_RUN('which rustup cargo')
         except:
@@ -106,7 +126,8 @@ class SimpleBuildSystem:
                 raise Exception('Rustup installation failed.')
         pass
 
-    def __install_pip(self):
+    @staticmethod
+    def __install_pip():
         try:
             SHELL_RUN('which pip3')
         except:
@@ -116,7 +137,8 @@ class SimpleBuildSystem:
                 raise Exception('pip3 installation failed.')
         pass
 
-    def __install_conan(self):
+    @staticmethod
+    def __install_conan():
         try:
             SHELL_RUN('which conan')
         except:
@@ -126,30 +148,54 @@ class SimpleBuildSystem:
                 raise Exception('Conan installation failed.')
         pass
 
+    def execute_with_permission(self, command, with_permission:True, logger=NoneLogger):
+        if with_permission:
+            logger = logger.warn()
+            if not hasattr(self, 'password'):
+                self.password = getpass(f'[sbs] password for {getuser()}: ')
+            logger.start()
+            command = f'echo {self.password} | sudo -kS sh -c "{command}"'
+        sp.run(command, capture_output=True, check=True, shell=True)
+        pass
+
+    def execute_sbs(self, command, args, logger=NoneLogger):
+        logger = logger.info()
+        enable_halo = not (logger==NoneLogger)
+        sbs_entry(command, args, False, enable_halo, prefix=self._title%'')
+        # for arg in args:
+        #     sp.run(f'$SBS_EXECUTABLE {command} {arg}', check=True, shell=True)
+        logger.start()
+        pass
+
     def _check_dependency(self, dep_map:dict, logger=NoneLogger):
         for cmd,args in dep_map.items():
+            _permission = False
             if cmd=='cargo':
                 self.__install_cargo()
                 _command = 'cargo install "%s"'
             elif cmd=='npm':
                 self.__install_npm()
-                _command = 'npm install "%s"'
+                _command = '$NPM install "%s"'
             elif cmd=='pip':
                 self.__install_pip()
-                _command = 'pip3 install "%s" -y'
+                _command = 'pip3 install "%s"'
             elif cmd=='conan':
                 self.__install_conan()
                 raise Exception('Conan is not supported now.')
-            elif cmd=='apt':
-                _command = 'sudo apt install "%s"'
+            elif cmd=='apt' and Path('/usr/bin/apt').exists():
+                args = [ ' '.join(args) ]
+                _command = 'apt install %s -y'
+                _permission = True
             elif cmd=='sbs':
-                _command = '$SBS_EXECUTABLE install "%s"'
+                logger.text = self._title%'Install Capability dependency ...'
+                self.execute_sbs('install', args, logger)
+                continue
             else:
-                return
+                continue
 
             for arg in args:
                 logger.text = self._title%_command%arg
-                SHELL_RUN(_command%arg)
+                self.execute_with_permission(_command%arg, _permission, logger)
         pass
 
     def __output_files(self, cmd:str, src_dir:Path, dst_dir:Path, ignore:bool):
@@ -173,11 +219,11 @@ class SimpleBuildSystem:
         self.__output_files('rm -rf', Path(src_dir), Path(dst_dir), ignore)
         pass
 
-    def _exec_scripts(self, scripts, logger=NoneLogger):
+    def _exec_scripts(self, scripts, logger=NoneLogger, with_permission=False):
         for i, cmd in enumerate(scripts):
-            logger.text = self._title%'Building: %s'%cmd
+            logger.text = self._title%'Execute: %s'%cmd
             try:
-                SHELL_RUN(cmd)
+                self.execute_with_permission(cmd, with_permission, logger)
             except Exception as e:
                 if isinstance(e, sp.CalledProcessError):
                     msg = e.stderr.decode().lstrip('/bin/sh: 1: ').rstrip()
@@ -218,15 +264,36 @@ class SimpleBuildSystem:
         self.output = [(_file,None) for _file in config['files']]
         pass
 
+    def load_multipart(self, path):
+        path = Path(path).absolute()
+        assert( path.is_relative_to('.') )
+        with open(path) as fd:
+            return json.load(fd)
+        pass
+
     def load_manifest(self):
         with open(Path('./manifest.json')) as fd:
             manifest = json.load( fd )
+        ## load basic sections: 'name', 'build.output'
         try:
             self.name = manifest['name']
             self.output = manifest['build']['output']
         except Exception as e:
-            raise Exception('%s section missing in maifest file.'%e)
-        #
+            raise Exception('%s section missing in manifest file.'%e)
+        # check manifest compatibility
+        try:
+            compat = manifest['manifest_version']
+        except:
+            compat = 'v1'
+        try:
+            assert( compat in COMPAT )
+        except:
+            raise Exception(f'[{self.name}] Manifest version {compat} not supported.')
+        ## load multipart manifest file
+        for key in ['build', 'clean', 'install', 'runtime', 'metadata', 'test']:
+            if key in manifest and type(manifest[key])==str:
+                manifest[key] = self.load_multipart(manifest[key])
+        ## check build procedure
         try:
             self.build_dependency = manifest['build']['dependency']
         except:
@@ -240,10 +307,12 @@ class SimpleBuildSystem:
         except:
             self.build_script = list()
         try:
-            self.install_script = manifest['install']
+            self.install_with_permission = manifest['install']['with_permission']
+            self.install_script = manifest['install']['script']
         except:
+            self.install_with_permission = False
             self.install_script = list()
-        #
+        ## prepare output list
         _output = [x.split('@') for x in self.output]
         _output = [(x[0],None) if len(x)==1 else (x[0],x[1]) for x in _output]
         self.output = _output
@@ -251,10 +320,10 @@ class SimpleBuildSystem:
 
 
     def build(self, logger=NoneLogger):
-        self._title = '[build] %s'
+        self._title = f'{self.prefix}[build] %s'
         try:
             self.load_manifest()
-            self._title = '[%s] %s'%(self.name, '%s')
+            self._title = f'{self.prefix}[%s] %s'%(self.name, '%s')
             #
             logger.text = self._title%'Check build dependency ...'
             self._check_dependency(self.build_dependency, logger)
@@ -272,10 +341,10 @@ class SimpleBuildSystem:
         pass
 
     def clean(self, logger=NoneLogger):
-        self._title = '[clean] %s'
+        self._title = f'{self.prefix}[clean] %s'
         try:
             _manifest = self.load_manifest()
-            self._title = '[%s] %s'%(self.name, '%s')
+            self._title = f'{self.prefix}[%s] %s'%(self.name, '%s')
             #
             _output = [x[1] if x[1] else x[0] for x in self.output]
             _output.append( POSIX(Path(self.name)/'.conf') )
@@ -299,14 +368,14 @@ class SimpleBuildSystem:
         pass
 
     def install(self, logger=NoneLogger):
-        self._title = '[install] %s'
+        self._title = f'{self.prefix}[install] %s'
         try:
             manifest = self.load_manifest()
-            self._title = '[%s] %s'%(self.name, '%s')
+            self._title = f'{self.prefix}[%s] %s'%(self.name, '%s')
             # check build outputs
             logger.text = self._title%'Check building results ...'
             try:
-                self._copy_files(Path('output'), self.output_dir)
+                self._copy_files(Path('.'), self.output_dir)
             except:
                 if logger.enabled:
                     self.build(logger)
@@ -329,7 +398,7 @@ class SimpleBuildSystem:
             self._copy_files(self.output_dir, self.install_dir)
             #
             logger.text = self._title%'Execute post-install script ...'
-            self._exec_scripts(self.install_script, logger)
+            self._exec_scripts(self.install_script, logger, self.install_with_permission)
             #
             logger.text = self._title%'Installed.'
         except Exception as e:
@@ -338,10 +407,10 @@ class SimpleBuildSystem:
         pass
 
     def uninstall(self, logger=NoneLogger):
-        self._title = '[uninstall] %s'
+        self._title = f'{self.prefix}[uninstall] %s'
         try:
             _manifest = self.load_config_file()
-            self._title = '[%s] %s'%(self.name, '%s')
+            self._title = f'{self.prefix}[%s] %s'%(self.name, '%s')
             #
             logger.text = self._title%'Uninstalling ...'
             _output = [POSIX( Path('..', x[1] if x[1] else x[0]) ) for x in self.output]
@@ -359,10 +428,10 @@ class SimpleBuildSystem:
         pass
 
     def test(self, logger=NoneLogger):
-        self._title = '[test] %s'
+        self._title = f'{self.prefix}[test] %s'
         try:
             self.load_manifest()
-            self._title = '[%s] %s'%(self.name, '%s')
+            self._title = f'{self.prefix}[%s] %s'%(self.name, '%s')
             # check build outputs
             logger.text = self._title%'Check building results ...'
             try:
@@ -387,7 +456,7 @@ def display_logo():
         tw.write([''], duration=100)
     pass
 
-def validate_work_dirs(command:str, work_dirs:list):
+def validate_work_dirs(command:str, work_dirs:list) -> list:
     if command=='uninstall':
         examiner = lambda _path: _path.is_dir() and (_path/'.conf').exists()
         work_dirs = [Path(INSTALL_DIRECTORY)/Path(_dir) for _dir in work_dirs]
@@ -421,7 +490,7 @@ def apply(executor, work_dirs, enable_halo=False):
     
     return ret
 
-def execute(sbs:SimpleBuildSystem, command:str, work_dirs, logo_show_flag, enable_halo):
+def execute(sbs:SimpleBuildSystem, command:str, work_dirs:list, logo_show_flag:bool, enable_halo:bool):
     assert( isinstance(sbs, SimpleBuildSystem) )
     if len(work_dirs)==0:
         return None
@@ -442,10 +511,15 @@ def execute(sbs:SimpleBuildSystem, command:str, work_dirs, logo_show_flag, enabl
         return None
     pass
 
-def sbs_entry(command, work_dirs, logo_show_flag=False, enable_halo=False):
-    sbs = SimpleBuildSystem()
+def sbs_entry(command, work_dirs, logo_show_flag=False, enable_halo=False, prefix=''):
+    os.environ['SBS_NESTED_LAYER'] = str( int(os.getenv('SBS_NESTED_LAYER',-1)) + 1 )
+    ##
+    sbs = SimpleBuildSystem(prefix)
     work_dirs = validate_work_dirs(command, work_dirs)
-    return execute(sbs, command, work_dirs, logo_show_flag, enable_halo)
+    ret = execute(sbs, command, work_dirs, logo_show_flag, enable_halo)
+    ##
+    os.environ['SBS_NESTED_LAYER'] = str( int(os.getenv('SBS_NESTED_LAYER',0)) - 1 )
+    return ret
 
 def init_subparsers(subparsers):
     p_build = subparsers.add_parser('build')

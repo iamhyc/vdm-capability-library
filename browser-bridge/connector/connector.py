@@ -10,14 +10,14 @@ from gi.repository import GLib
 from pyvdm.interface import CapabilityLibrary
 xm = CapabilityLibrary.CapabilityHandleLocal('x11-manager')
 
-import logging, traceback
-logging.basicConfig(format='%(asctime)s %(message)s', encoding='utf-8', level=logging.DEBUG,
-    filename='/tmp/browser-bridge.log', filemode='w')
+# import logging, traceback
+# logging.basicConfig(format='%(asctime)s %(message)s', encoding='utf-8', level=logging.DEBUG, filename='/tmp/browser-bridge.log', filemode='w')
 
 FILE_NAME_MAP = {
     'connector_chrome': 'google-chrome',
     'connector_firefox': 'firefox-esr',
     'connector_edge': 'microsoft-edge',
+    'connector_deepin': 'org.deepin.browser.desktop',
 }
 
 async def connect_stdin_stdout():
@@ -28,6 +28,15 @@ async def connect_stdin_stdout():
     w_transport, w_protocol = await loop.connect_write_pipe(asyncio.streams.FlowControlMixin, stdout)
     writer = asyncio.StreamWriter(w_transport, w_protocol, reader, loop)
     return (reader, writer)
+
+def retry_with_timeout(lamb_fn, timeout=1):
+    import time
+    _now = time.time()
+    ret = lamb_fn()
+    while not ret and time.time()-_now<timeout:
+        ret = lamb_fn()
+        time.sleep(0.1)
+    return ret
 
 class BrowserConnector:
     def __init__(self, reader, writer):
@@ -75,27 +84,31 @@ class BrowserWindowInterface(dbus.service.Object):
         return ret
 
     def set_xid(self):
+        if hasattr(self, 'xid') and self.xid:
+            return
+        #
         temp_name = f'{self.name}-{self.unique}'
         t_id = self.sync_ctrl({'req':'open_temp', 'w_id':self.w_id, 'name':temp_name})
         try:
-            _window = xm.get_windows_by_name(temp_name)[0]
+            _lamb_fn = lambda: xm.get_windows_by_name(temp_name)
+            _window = retry_with_timeout(_lamb_fn)[0]
             self.xid = _window['xid']
         except:
             self.xid = 0
         finally:
             self.sync_ctrl({'req':'close_temp', 'w_id':self.w_id, 't_id':t_id})
+        # logging.info(f'xid update: {self.xid}')
         pass
 
     @dbus.service.method(dbus_interface='org.VDMCompatible.src',
                         out_signature='s')
     def Save(self) -> str:
         ret = self.sync_ctrl({'req':'save', 'w_id':self.w_id})
-        if not self.xid:
-            self.set_xid()
+        self.set_xid()
         return ret
     
     @dbus.service.method(dbus_interface='org.VDMCompatible.src',
-                        in_signature='ss')
+                        in_signature='sb')
     def Resume(self, stat:str, new:bool):
         _req = 'new' if new else 'resume'
         self.sync_ctrl({'req':_req, 'w_id':self.w_id, 'stat':stat})
@@ -165,10 +178,11 @@ async def handle_event(browser_name):
                     pass
             else:
                 ifaces[ w_id ]['tx_q'].put( res['res'] )
-        except asyncio.exceptions.TimeoutError:
+        except asyncio.TimeoutError:
             pass
         except:
-            logging.error( traceback.format_exc() )
+            # logging.error( traceback.format_exc() )
+            exit()
         ## handle events from d-bus (on another thread)
         try:
             req = recv_queue.get_nowait()

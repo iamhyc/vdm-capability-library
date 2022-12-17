@@ -2,10 +2,12 @@
     "name": "browser-bridge",
     "type": "dbus",
     "version": "0.1.2",
+    "manifest_version": "v1",
 
     "build": {
         "dependency": {
             "npm": [],
+            "apt": ["libdbus-1-dev", "libglib2.0-dev", "libgirepository1.0-dev", "libcairo2-dev"],
             "pip": ["dbus-python", "PyGObject"]
         },
         "script": [
@@ -13,27 +15,32 @@
             "(cd extension; npm run init)",
             "(cd extension; npm run build chrome; npm run build edge)",
             "(cd extension; ../scripts/crxmake.sh dist/chrome packages/chrome.pem)",
-            "(cd extension; npm run build firefox)"
+            "(cd extension; npm run build firefox)",
+
+            "(cd extension; cp ./packages/chrome.json ./dist/chrome.json; sed -i 's@~@'\"$HOME\"'@' ./dist/chrome.json)"
         ],
         "output": [
-            "",
+            "entry.py",
             "./extension/packages/chrome.crx@browser-bridge.chrome.crx",
             "./extension/packages/chrome.pem@browser-bridge.chrome.pem"
         ]
     },
 
-    "install": [
-        "(cd scripts; ./install_connector.sh)",
-        "(cd scripts; ./install_extension.sh)"
-    ],
+    "install": {
+        "with_permission": true,
+        "script": [
+            "(cd scripts; ./install_connector.sh)",
+            "(cd scripts; ./install_extension.sh)"
+        ]
+    },
 
     "clean": [
-        "extension/dist", "extension/node_modules", "extension/package-lock.json",
-        "extension/packages/*.zip"
+        "extension/dist", "extension/packages/*.zip"
     ],
 
     "runtime": {
         "dependency": {
+            "sbs": ["../x11-manager"],
             "pip": ["dbus-python", "PyGObject"]
         },
         "status": "echo Capable",
