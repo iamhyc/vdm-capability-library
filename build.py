@@ -83,9 +83,11 @@ class NoneLogger:
     @staticmethod
     def stop():pass
     @staticmethod
-    def info():pass
+    def info(): return NoneLogger()
     @staticmethod
-    def warn():pass
+    def warn(): return NoneLogger()
+    @staticmethod
+    def succeed(): return NoneLogger()
     pass
 
 class SimpleBuildSystem:
@@ -106,8 +108,8 @@ class SimpleBuildSystem:
             SHELL_RUN('which npm')
         except:
             try:
-                SHELL_RUN('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash')
-                SHELL_RUN('. $HOME/.nvm/nvm.sh && nvm install --lts')
+                SHELL_RUN('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash')
+                SHELL_RUN('. $HOME/.nvm/nvm.sh && nvm install --lts=gallium')
             except:
                 raise Exception('npm installation failed.')
             else:
@@ -148,14 +150,20 @@ class SimpleBuildSystem:
                 raise Exception('Conan installation failed.')
         pass
 
-    def execute_with_permission(self, command, with_permission:True, logger=NoneLogger):
-        if with_permission:
+    def execute_with_permission(self, command, with_permission=True, logger=NoneLogger):
+        if with_permission and not os.geteuid()==0:
             logger = logger.warn()
             if not hasattr(self, 'password'):
                 self.password = getpass(f'[sbs] password for {getuser()}: ')
             logger.start()
-            command = f'echo {self.password} | sudo -kS sh -c "{command}"'
-        sp.run(command, capture_output=True, check=True, shell=True)
+            _command = f'echo {self.password} | sudo -kS sh -c "{command}"'
+        else:
+            _command = command
+        ##
+        try:
+            sp.run(_command, capture_output=True, check=True, shell=True)
+        except Exception:
+            raise Exception(f'\nFailed to execute command: {command}.')
         pass
 
     def execute_sbs(self, command, args, logger=NoneLogger):
@@ -175,7 +183,7 @@ class SimpleBuildSystem:
                 _command = 'cargo install "%s"'
             elif cmd=='npm':
                 self.__install_npm()
-                _command = '$NPM install "%s"'
+                _command = 'npm install "%s"'
             elif cmd=='pip':
                 self.__install_pip()
                 _command = 'pip3 install "%s"'
@@ -184,7 +192,7 @@ class SimpleBuildSystem:
                 raise Exception('Conan is not supported now.')
             elif cmd=='apt' and Path('/usr/bin/apt').exists():
                 args = [ ' '.join(args) ]
-                _command = 'apt install %s -y'
+                _command = 'apt install -y %s'
                 _permission = True
             elif cmd=='sbs':
                 logger.text = self._title%'Install Capability dependency ...'
@@ -201,11 +209,11 @@ class SimpleBuildSystem:
     def __output_files(self, cmd:str, src_dir:Path, dst_dir:Path, ignore:bool):
         for src_file,dst_file in self.output:
             try:
-                _dst_path = dst_dir/(dst_file if dst_file else src_file)
+                _dst_path = dst_dir/(dst_file if dst_file else src_file) # type: ignore
                 _dst_path.parent.mkdir(parents=True, exist_ok=True)
-                src_path = src_dir / src_file
+                src_path = src_dir / src_file # type: ignore
                 dst_path = _dst_path if dst_file else _dst_path.parent
-                SHELL_RUN( f'{cmd} {POSIX(src_path.resolve())} {POSIX(dst_path.resolve())}' )
+                SHELL_RUN( f'{cmd} {POSIX(src_path.resolve())} {POSIX(dst_path.resolve()).rstrip("*")}' )
             except Exception as e:
                 if not ignore: raise e
         pass
@@ -221,9 +229,14 @@ class SimpleBuildSystem:
 
     def _exec_scripts(self, scripts, logger=NoneLogger, with_permission=False):
         for i, cmd in enumerate(scripts):
-            logger.text = self._title%'Execute: %s'%cmd
+            logger.text = self._title%'Execute: %s'%(cmd.replace('\n','\\n'))
             try:
-                self.execute_with_permission(cmd, with_permission, logger)
+                if cmd.startswith('sudo'):
+                    cmd = cmd[4:].lstrip()
+                    cmd_check = True
+                else:
+                    cmd_check = False
+                self.execute_with_permission(cmd, cmd_check or with_permission, logger)
             except Exception as e:
                 if isinstance(e, sp.CalledProcessError):
                     msg = e.stderr.decode().lstrip('/bin/sh: 1: ').rstrip()
@@ -238,7 +251,7 @@ class SimpleBuildSystem:
         _output = [ x[1] if x[1] else x[0] for x in self.output ]
         #
         cfg = {
-            'entry':Path(_output[0]).name, 'files': _output,
+            'entry':Path(_output[0]).name, 'files': _output, # type: ignore
             'runtime': manifest['runtime'],
             'metadata': {
                 'name':manifest['name'], 'class':manifest['type'], 'version':manifest['version'],
@@ -413,7 +426,7 @@ class SimpleBuildSystem:
             self._title = f'{self.prefix}[%s] %s'%(self.name, '%s')
             #
             logger.text = self._title%'Uninstalling ...'
-            _output = [POSIX( Path('..', x[1] if x[1] else x[0]) ) for x in self.output]
+            _output = [POSIX( Path('..', x[1] if x[1] else x[0]) ) for x in self.output] # type: ignore
             _output.append('.conf')
             _output = [(x,None) for x in _output]
             self.output = _output
@@ -555,7 +568,7 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as e:
-        raise e if DBG else ''
+        if DBG: raise e
     finally:
         '' if DBG else exit()
     pass

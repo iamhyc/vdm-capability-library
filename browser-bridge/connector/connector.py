@@ -7,18 +7,12 @@ from sys import stdin, stdout
 import dbus, dbus.service, dbus.mainloop.glib
 from gi.repository import GLib
 
+from pyvdm.core.utils import retry_with_timeout
 from pyvdm.interface import CapabilityLibrary
 xm = CapabilityLibrary.CapabilityHandleLocal('x11-manager')
 
 # import logging, traceback
 # logging.basicConfig(format='%(asctime)s %(message)s', encoding='utf-8', level=logging.DEBUG, filename='/tmp/browser-bridge.log', filemode='w')
-
-FILE_NAME_MAP = {
-    'connector_chrome': 'google-chrome',
-    'connector_firefox': 'firefox-esr',
-    'connector_edge': 'microsoft-edge',
-    'connector_deepin': 'org.deepin.browser.desktop',
-}
 
 async def connect_stdin_stdout():
     loop = asyncio.get_event_loop()
@@ -28,15 +22,6 @@ async def connect_stdin_stdout():
     w_transport, w_protocol = await loop.connect_write_pipe(asyncio.streams.FlowControlMixin, stdout)
     writer = asyncio.StreamWriter(w_transport, w_protocol, reader, loop)
     return (reader, writer)
-
-def retry_with_timeout(lamb_fn, timeout=1):
-    import time
-    _now = time.time()
-    ret = lamb_fn()
-    while not ret and time.time()-_now<timeout:
-        ret = lamb_fn()
-        time.sleep(0.1)
-    return ret
 
 class BrowserConnector:
     def __init__(self, reader, writer):
@@ -195,7 +180,7 @@ async def handle_event(browser_name):
 
 def main():
     try:
-        browser_name = FILE_NAME_MAP[ Path(__file__).stem ]
+        browser_name = Path(__file__).stem[ len('connector_'): ]
     except:
         browser_name = 'test'
     threading.Thread(target=start_glib_thread, daemon=True, args=()).start()
